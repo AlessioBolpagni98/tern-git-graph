@@ -7,8 +7,11 @@ on the left.
 - Lanes for local branches, remote branches (toggle) and tags, with ref chips on their commits
 - Follows the terminal it was opened from: `cd` into another repository and the graph switches
 - Refreshes on its own when a command finishes in any pane inside the repository (commit, checkout, fetch, rebase…)
-- Double click or <kbd>Enter</kbd> on a commit shows its diff in place; <kbd>Esc</kbd> goes back
-- Right click a commit to copy its hash or subject, or open its diff
+- Click a commit and its details show beside the graph (under it in a narrow pane): author, message, refs,
+  parents, files with their added and removed lines, and each file's diff
+- Double click, <kbd>Enter</kbd> or the expand button gives the commit the whole pane; <kbd>Esc</kbd> goes back
+- The head row shows the checked-out branch, how far it is ahead of or behind its upstream, and the commit count
+- Right click a commit to copy its hash or subject, or expand it
 - Read-only: it never changes the repository
 
 ## Install
@@ -35,11 +38,11 @@ Keys inside the graph:
 | Key | Action |
 | --- | --- |
 | <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>k</kbd> <kbd>j</kbd> | Select a commit (<kbd>PgUp</kbd> <kbd>PgDn</kbd>, <kbd>g</kbd> <kbd>G</kbd> jump) |
-| <kbd>Enter</kbd> | Show the commit's diff (merges against their first parent) |
+| <kbd>Enter</kbd> | Expand the selected commit (merges are diffed against their first parent) |
 | <kbd>c</kbd> | Copy the selected commit's hash |
 | <kbd>m</kbd> | Show or hide remote branches |
 | <kbd>r</kbd> | Refresh |
-| <kbd>Esc</kbd> | Back from a diff; closes the quick look |
+| <kbd>Esc</kbd> | Back from an expanded commit; closes the quick look |
 | <kbd>q</kbd> | Close |
 
 ### Using ⌘⇧G instead
