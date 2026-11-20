@@ -1,0 +1,135 @@
+/* git-graph: the lane drawing beside the commit table. Pieces are absolutely
+   placed in fixed-height rows; positions come from per-lane classes, colors
+   from theme tokens so lanes follow light and dark themes. */
+
+[data-surface^='plugin.git-graph.'] {
+	--gg-lane: 12px;
+	/* A table row's stride: the region's line plus 6px, so graph rows line up with commit rows. */
+	--gg-row: calc(var(--sf-lh) + 6px);
+
+	/* Ref chips keep the code chip but take their kind's color. */
+	.sf-t-code.sf-t-accent { color: var(--sf-c-accent); }
+	.sf-t-code.sf-t-success { color: var(--sf-c-success); }
+	.sf-t-code.sf-t-info { color: var(--sf-c-info); }
+	.sf-t-code.sf-t-warning { color: var(--sf-c-warning); }
+
+	.gg-graph {
+		flex: none;
+		position: relative;
+	}
+	.gg-row {
+		position: relative;
+		height: var(--gg-row);
+	}
+	.gg-s {
+		position: absolute;
+		display: block;
+		box-sizing: border-box;
+	}
+
+	.gg-c0 { --gg: var(--accent); }
+	.gg-c1 { --gg: var(--ok); }
+	.gg-c2 { --gg: var(--warn); }
+	.gg-c3 { --gg: var(--live); }
+	.gg-c4 { --gg: var(--tk-type); }
+	.gg-c5 { --gg: var(--tk-macro); }
+	.gg-c6 { --gg: var(--ink-pen); }
+	.gg-c7 { --gg: var(--tk-constant); }
+
+	/* Lines through a lane. */
+	.gg-v, .gg-top, .gg-bottom {
+		left: calc(var(--gg-x) * var(--gg-lane) + 5px);
+		width: 2px;
+		background: var(--gg);
+	}
+	.gg-v { top: 0; bottom: 0; }
+	.gg-top { top: 0; height: 50%; }
+	.gg-bottom { top: 50%; bottom: 0; }
+
+	/* The commit. */
+	.gg-dot {
+		left: calc(var(--gg-x) * var(--gg-lane) + 2px);
+		top: calc(50% - 4px);
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--gg);
+	}
+	.gg-dot.gg-merge {
+		left: calc(var(--gg-x) * var(--gg-lane) + 3px);
+		top: calc(50% - 3px);
+		width: 6px;
+		height: 6px;
+	}
+	.gg-dot.gg-head {
+		left: calc(var(--gg-x) * var(--gg-lane) + 1px);
+		top: calc(50% - 5px);
+		width: 10px;
+		height: 10px;
+		background: var(--panel);
+		box-shadow: inset 0 0 0 2px var(--gg);
+	}
+
+	/* Curves between lanes: a line joining from above into the dot, or leaving
+	   the dot for a lane below. The box spans both lanes; its borders draw the turn. */
+	.gg-join, .gg-fork {
+		left: calc(var(--gg-x) * var(--gg-lane) + 5px);
+		width: calc(var(--gg-d) * var(--gg-lane) + 2px);
+		border: 0 solid var(--gg);
+	}
+	.gg-join { top: 0; height: calc(50% + 1px); border-bottom-width: 2px; }
+	.gg-join.gg-r { border-right-width: 2px; border-bottom-right-radius: 8px; }
+	.gg-join.gg-l { border-left-width: 2px; border-bottom-left-radius: 8px; }
+	.gg-fork { top: calc(50% - 1px); bottom: 0; border-top-width: 2px; }
+	.gg-fork.gg-r { border-right-width: 2px; border-top-right-radius: 8px; }
+	.gg-fork.gg-l { border-left-width: 2px; border-top-left-radius: 8px; }
+
+	/* Lane positions, curve spans and column widths (lib/view.luau MAX_LANES = 16). */
+	.gg-x0 { --gg-x: 0; }
+	.gg-x1 { --gg-x: 1; }
+	.gg-x2 { --gg-x: 2; }
+	.gg-x3 { --gg-x: 3; }
+	.gg-x4 { --gg-x: 4; }
+	.gg-x5 { --gg-x: 5; }
+	.gg-x6 { --gg-x: 6; }
+	.gg-x7 { --gg-x: 7; }
+	.gg-x8 { --gg-x: 8; }
+	.gg-x9 { --gg-x: 9; }
+	.gg-x10 { --gg-x: 10; }
+	.gg-x11 { --gg-x: 11; }
+	.gg-x12 { --gg-x: 12; }
+	.gg-x13 { --gg-x: 13; }
+	.gg-x14 { --gg-x: 14; }
+	.gg-x15 { --gg-x: 15; }
+	.gg-d1 { --gg-d: 1; }
+	.gg-d2 { --gg-d: 2; }
+	.gg-d3 { --gg-d: 3; }
+	.gg-d4 { --gg-d: 4; }
+	.gg-d5 { --gg-d: 5; }
+	.gg-d6 { --gg-d: 6; }
+	.gg-d7 { --gg-d: 7; }
+	.gg-d8 { --gg-d: 8; }
+	.gg-d9 { --gg-d: 9; }
+	.gg-d10 { --gg-d: 10; }
+	.gg-d11 { --gg-d: 11; }
+	.gg-d12 { --gg-d: 12; }
+	.gg-d13 { --gg-d: 13; }
+	.gg-d14 { --gg-d: 14; }
+	.gg-d15 { --gg-d: 15; }
+	.gg-n1 { width: calc(1 * var(--gg-lane) + 6px); }
+	.gg-n2 { width: calc(2 * var(--gg-lane) + 6px); }
+	.gg-n3 { width: calc(3 * var(--gg-lane) + 6px); }
+	.gg-n4 { width: calc(4 * var(--gg-lane) + 6px); }
+	.gg-n5 { width: calc(5 * var(--gg-lane) + 6px); }
+	.gg-n6 { width: calc(6 * var(--gg-lane) + 6px); }
+	.gg-n7 { width: calc(7 * var(--gg-lane) + 6px); }
+	.gg-n8 { width: calc(8 * var(--gg-lane) + 6px); }
+	.gg-n9 { width: calc(9 * var(--gg-lane) + 6px); }
+	.gg-n10 { width: calc(10 * var(--gg-lane) + 6px); }
+	.gg-n11 { width: calc(11 * var(--gg-lane) + 6px); }
+	.gg-n12 { width: calc(12 * var(--gg-lane) + 6px); }
+	.gg-n13 { width: calc(13 * var(--gg-lane) + 6px); }
+	.gg-n14 { width: calc(14 * var(--gg-lane) + 6px); }
+	.gg-n15 { width: calc(15 * var(--gg-lane) + 6px); }
+	.gg-n16 { width: calc(16 * var(--gg-lane) + 6px); }
+}

@@ -1,0 +1,19 @@
+schema = 1
+id = "git-graph"
+name = "Git Graph"
+version = "0.1.0"
+description = "A minimal commit graph of every branch, as a quick look or a sidebar."
+icon = "branch"
+host = "host.luau"
+window = "window.luau"
+styles = ["graph.css"]
+
+[[blocks]]
+id = "peek"
+title = "Git Graph"
+palette = false
+
+[[blocks]]
+id = "sidebar"
+title = "Git Graph sidebar"
+palette = false
