@@ -66,6 +66,20 @@ local function pane_cwd(pane: number): string?
 	return nil
 end
 
+-- Runs git. `tern.process.run` raises when it can't start the process (the directory
+-- was deleted, git isn't on PATH); report that as a failed run instead, so a block
+-- restored into a vanished directory shows "not a repository" rather than dying in init.
+local function git(argv: { string }, opts: ProcessOptions, cb: (ProcessResult) -> ())
+	local ok, err = pcall(function()
+		tern.process.run(argv, opts, function(r)
+			cb(r)
+		end)
+	end)
+	if not ok then
+		cb({ status = -1, stdout = "", stderr = tostring(err), timed_out = false })
+	end
+end
+
 -- Splits `git show --numstat --patch` output into one entry per file: the numstat
 -- lines come first, in the same order as the patches.
 local function split_files(out: string): ({ view.FileDiff }, number, number, number)
@@ -132,7 +146,7 @@ local function request_detail(e: Entry, hash: string)
 	local gen = e.dgen
 	local d: view.Detail = { hash = hash, loading = true, error = nil, body = "", files = {}, cut = 0, adds = 0, dels = 0 }
 	state.detail = d
-	tern.process.run({
+	git({
 		"git", "show", "--no-color", "--no-ext-diff", "-M", "--diff-merges=first-parent",
 		"--format=%B%x1e", "--numstat", "--patch", hash, "--",
 	}, { cwd = state.root, timeout_ms = GIT_MS }, function(r)
@@ -180,7 +194,7 @@ local function load(e: Entry)
 	state.loading = true
 	cx:render()
 	local cwd = state.cwd :: string
-	tern.process.run({ "git", "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD" }, { cwd = cwd, timeout_ms = GIT_MS }, function(r)
+	git({ "git", "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD" }, { cwd = cwd, timeout_ms = GIT_MS }, function(r)
 		if not current() then
 			return
 		end
@@ -203,7 +217,7 @@ local function load(e: Entry)
 		state.branch = if out[2] == "HEAD" then "detached" else out[2]
 
 		-- Ahead/behind the upstream; no upstream is not an error.
-		tern.process.run({ "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}" }, { cwd = root, timeout_ms = GIT_MS }, function(nr)
+		git({ "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}" }, { cwd = root, timeout_ms = GIT_MS }, function(nr)
 			if not current() then
 				return
 			end
@@ -213,7 +227,7 @@ local function load(e: Entry)
 				return
 			end
 			local name = trim(nr.stdout)
-			tern.process.run({ "git", "rev-list", "--left-right", "--count", "HEAD...@{upstream}" }, { cwd = root, timeout_ms = GIT_MS }, function(ur)
+			git({ "git", "rev-list", "--left-right", "--count", "HEAD...@{upstream}" }, { cwd = root, timeout_ms = GIT_MS }, function(ur)
 				if not current() then
 					return
 				end
@@ -267,11 +281,11 @@ local function load(e: Entry)
 			end
 			cx:render()
 		end
-		tern.process.run(graph.log_argv(state.limit, remotes), { cwd = root, timeout_ms = GIT_MS }, function(lr)
+		git(graph.log_argv(state.limit, remotes), { cwd = root, timeout_ms = GIT_MS }, function(lr)
 			log = lr
 			both()
 		end)
-		tern.process.run(graph.count_argv(remotes), { cwd = root, timeout_ms = GIT_MS }, function(cr)
+		git(graph.count_argv(remotes), { cwd = root, timeout_ms = GIT_MS }, function(cr)
 			count = cr
 			both()
 		end)
