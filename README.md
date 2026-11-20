@@ -4,6 +4,8 @@ A minimal commit graph for [Tern](https://docs.stencil.so/tern/): every branch o
 colored lanes beside a table of commits. Open it as a quick look floating over the terminal, or keep it as a sidebar
 on the left.
 
+![Git Graph quick look: lanes for every branch beside the commit table, with the selected commit's author, refs and changes below](docs/screenshot.png)
+
 - Lanes for local branches, remote branches (toggle) and tags, with ref chips on their commits
 - Follows the terminal it was opened from: `cd` into another repository and the graph switches
 - Refreshes on its own when a command finishes in any pane inside the repository (commit, checkout, fetch, rebase…)
@@ -17,13 +19,19 @@ on the left.
 ## Install
 
 ```sh
-tern plugin install ~/GitHub/tern-git-graph   # copy into Tern's plugins folder
-# or, to edit in place:
-tern plugin link ~/GitHub/tern-git-graph
+tern plugin install github.com/AlessioBolpagni98/tern-git-graph
 ```
 
-The plugin has both halves (`host.luau` for the graph block, `window.luau` for the commands), so for panes on a remote
-host install it on that host too. It needs `git` 2.31 or newer on `PATH`.
+Update later with `tern plugin install github.com/AlessioBolpagni98/tern-git-graph --force`.
+
+Requirements:
+
+- [Tern](https://stencil.so/tern) (built and tested on 0.9.29)
+- `git` 2.31 or newer on `PATH`
+
+The plugin has both halves (`host.luau` for the graph block, `window.luau` for the commands and the key), so for
+panes on a remote host install it on that host too. It reads the repository with `git log` and `git show` only and
+never writes to it.
 
 ## Use
 
@@ -69,7 +77,8 @@ On Linux and Windows use `"ctrl+shift+g"`. Bind `plugin.git-graph.sidebar` the s
 ## Develop
 
 ```sh
-cd ~/GitHub/tern-git-graph
+git clone https://github.com/AlessioBolpagni98/tern-git-graph
+cd tern-git-graph
 tern plugin link .          # Tern reloads the plugin on every save
 tern plugin types .         # tern.d.luau for luau-lsp
 luau-lsp analyze --platform=standard --definitions=@tern=tern.d.luau host.luau window.luau lib/*.luau
@@ -79,7 +88,7 @@ luau tests/graph_test.luau  # lane layout and parsing tests
 | File | Role |
 | --- | --- |
 | `lib/graph.luau` | `git log` arguments, parsing and the lane layout (no Tern API, runs under plain `luau`) |
-| `lib/view.luau` | The views: the graph page and the commit page |
+| `lib/view.luau` | The views: graph and commit details side by side, and the expanded commit |
 | `host.luau` | The `peek` and `sidebar` blocks: reading git, keys, events, refresh hooks |
 | `window.luau` | Commands, the default key and the Files pane button |
 | `graph.css` | The lane drawing, scoped to the plugin's blocks and colored with theme tokens |
@@ -87,6 +96,11 @@ luau tests/graph_test.luau  # lane layout and parsing tests
 The graph is a column of absolutely placed pieces (lines, curves, dots) next to Tern's native table, one fixed-height
 row per commit: the row height follows the table's stride (`--sf-lh` + 6px), so both stay aligned at any font size.
 
+## Contributing
+
+Issues and pull requests are welcome. Run the type check and the tests above before opening a pull request, and
+include a screenshot for visual changes.
+
 ## License
 
-MIT
+[MIT](LICENSE)
