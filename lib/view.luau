@@ -9,6 +9,8 @@ local M = {}
 
 -- Lanes drawn; lines further right are cut (graph.css has a class per lane).
 M.MAX_LANES = 16
+-- Commits loaded per page.
+M.PAGE = 300
 
 export type FileDiff = { path: string, text: string, binary: boolean }
 
@@ -268,8 +270,8 @@ local function graph_body(state: State): Node
 		table.insert(list, ui.node("pager", {
 			key = "more",
 			variant = "more",
-			page = 1,
-			size = #state.commits,
+			page = state.limit // M.PAGE,
+			size = M.PAGE,
 			total = state.total,
 			loading = state.loading,
 			label = "commits",

@@ -10,7 +10,7 @@
 local graph = require("./lib/graph")
 local view = require("./lib/view")
 
-local PAGE = 300 -- commits per page
+local PAGE = view.PAGE
 local GIT_MS = 15000 -- git timeout
 local DEBOUNCE_MS = 400 -- wait after a command before re-reading
 local MAX_FILES = 80 -- files shown in a commit
