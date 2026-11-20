@@ -25,7 +25,11 @@ type Entry = {
 	gen: number, -- bumps on every history read; stale answers are dropped
 	dgen: number, -- same, for commit reads
 	pending: TimerHandle?,
+	cache: { [string]: view.Detail }, -- read commits by hash (commits never change)
+	cached: number,
 }
+
+local MAX_CACHE = 40 -- commits kept read per block
 
 local live: { [number]: Entry } = {}
 
@@ -62,6 +66,103 @@ local function pane_cwd(pane: number): string?
 	return nil
 end
 
+-- Splits `git show --numstat --patch` output into one entry per file: the numstat
+-- lines come first, in the same order as the patches.
+local function split_files(out: string): ({ view.FileDiff }, number, number, number)
+	local files: { view.FileDiff } = {}
+	local cut = 0
+	local text = "\n" .. out
+	local stats: { { number? } } = {}
+	local first = string.find(text, "\ndiff --git ", 1, true) or (#text + 1)
+	for a, d in string.gmatch(string.sub(text, 1, first), "\n([%d%-]+)\t([%d%-]+)\t[^\n]*") do
+		table.insert(stats, { tonumber(a), tonumber(d) })
+	end
+	local starts = {}
+	local at = 1
+	while true do
+		local s = string.find(text, "\ndiff --git ", at, true)
+		if s == nil then
+			break
+		end
+		table.insert(starts, s + 1)
+		at = s + 1
+	end
+	local used = 0
+	for i, s in starts do
+		local stop = if starts[i + 1] then starts[i + 1] - 2 else #text
+		local chunk = string.sub(text, s, stop)
+		if #files >= MAX_FILES or used + #chunk > MAX_PATCH then
+			cut += 1
+			continue
+		end
+		used += #chunk
+		local path = string.match(chunk, "\n%+%+%+ b/([^\n]+)")
+			or string.match(chunk, "\n%-%-%- a/([^\n]+)")
+			or string.match(chunk, "^diff %-%-git a/.- b/([^\n]+)")
+			or "?"
+		local binary = string.find(chunk, "\nBinary files ", 1, true) ~= nil
+			or string.find(chunk, "\nGIT binary patch", 1, true) ~= nil
+		local st = stats[i] or {}
+		table.insert(files, { path = path, text = chunk, binary = binary, adds = st[1], dels = st[2] })
+	end
+	local adds, dels = 0, 0
+	for _, st in stats do
+		adds += st[1] or 0
+		dels += st[2] or 0
+	end
+	return files, cut, adds, dels
+end
+
+-- Shows commit `hash` in the details: from the cache, else read it.
+local function request_detail(e: Entry, hash: string)
+	local state, cx = e.state, e.cx
+	if state.root == nil then
+		return
+	end
+	local hit = e.cache[hash]
+	if hit then
+		state.detail = hit
+		return
+	end
+	local cur = state.detail
+	if cur and cur.hash == hash and cur.loading then
+		return -- already on its way (a double click selects, then activates)
+	end
+	e.dgen += 1
+	local gen = e.dgen
+	local d: view.Detail = { hash = hash, loading = true, error = nil, body = "", files = {}, cut = 0, adds = 0, dels = 0 }
+	state.detail = d
+	tern.process.run({
+		"git", "show", "--no-color", "--no-ext-diff", "-M", "--diff-merges=first-parent",
+		"--format=%B%x1e", "--numstat", "--patch", hash, "--",
+	}, { cwd = state.root, timeout_ms = GIT_MS }, function(r)
+		if live[cx.pane] ~= e or not alive(cx.pane) then
+			return
+		end
+		d.loading = false
+		if r.status ~= 0 then
+			d.error = trim(r.stderr)
+		else
+			local sep = string.find(r.stdout, "\30", 1, true)
+			if sep then
+				d.body = string.sub(r.stdout, 1, sep - 1)
+				d.files, d.cut, d.adds, d.dels = split_files(string.sub(r.stdout, sep + 1))
+			else
+				d.body = r.stdout
+			end
+			-- Cache it even when the user has moved on: they may come back.
+			if e.cached >= MAX_CACHE then
+				e.cache, e.cached = {}, 0
+			end
+			e.cache[hash] = d
+			e.cached += 1
+		end
+		if gen == e.dgen and state.detail == d then
+			cx:render()
+		end
+	end)
+end
+
 -- Reads the repository at state.cwd: root and branch, then the log and the commit count.
 local function load(e: Entry)
 	local state, cx = e.state, e.cx
@@ -95,9 +196,36 @@ local function load(e: Entry)
 		if root ~= state.root then
 			-- Another repository: forget what belonged to the last one.
 			state.commits, state.rows, state.sel, state.total, state.detail = {}, {}, nil, nil, nil
+			state.zoom, state.upstream = false, nil
+			e.cache, e.cached = {}, 0
 		end
 		state.root = root
 		state.branch = if out[2] == "HEAD" then "detached" else out[2]
+
+		-- Ahead/behind the upstream; no upstream is not an error.
+		tern.process.run({ "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}" }, { cwd = root, timeout_ms = GIT_MS }, function(nr)
+			if not current() then
+				return
+			end
+			if nr.status ~= 0 then
+				state.upstream = nil
+				cx:render()
+				return
+			end
+			local name = trim(nr.stdout)
+			tern.process.run({ "git", "rev-list", "--left-right", "--count", "HEAD...@{upstream}" }, { cwd = root, timeout_ms = GIT_MS }, function(ur)
+				if not current() then
+					return
+				end
+				local ahead, behind = string.match(ur.stdout, "^(%d+)%s+(%d+)")
+				if ur.status == 0 and ahead then
+					state.upstream = { name = name, ahead = tonumber(ahead) :: number, behind = tonumber(behind) :: number }
+				else
+					state.upstream = nil
+				end
+				cx:render()
+			end)
+		end)
 
 		local log: ProcessResult? = nil
 		local count: ProcessResult? = nil
@@ -132,6 +260,10 @@ local function load(e: Entry)
 			end
 			if not keep then
 				state.sel = if #state.commits > 0 then state.commits[1].hash else nil
+				state.zoom = false -- the commit being read is gone
+			end
+			if state.sel then
+				request_detail(e, state.sel :: string)
 			end
 			cx:render()
 		end
@@ -146,73 +278,7 @@ local function load(e: Entry)
 	end)
 end
 
--- Splits `git show` patch text into one entry per file.
-local function split_files(patch: string): ({ view.FileDiff }, number)
-	local files: { view.FileDiff } = {}
-	local cut = 0
-	local text = "\n" .. patch
-	local starts = {}
-	local at = 1
-	while true do
-		local s = string.find(text, "\ndiff --git ", at, true)
-		if s == nil then
-			break
-		end
-		table.insert(starts, s + 1)
-		at = s + 1
-	end
-	local used = 0
-	for i, s in starts do
-		local stop = if starts[i + 1] then starts[i + 1] - 2 else #text
-		local chunk = string.sub(text, s, stop)
-		if #files >= MAX_FILES or used + #chunk > MAX_PATCH then
-			cut += 1
-			continue
-		end
-		used += #chunk
-		local path = string.match(chunk, "\n%+%+%+ b/([^\n]+)")
-			or string.match(chunk, "\n%-%-%- a/([^\n]+)")
-			or string.match(chunk, "^diff %-%-git a/.- b/([^\n]+)")
-			or "?"
-		local binary = string.find(chunk, "\nBinary files ", 1, true) ~= nil
-			or string.find(chunk, "\nGIT binary patch", 1, true) ~= nil
-		table.insert(files, { path = path, text = chunk, binary = binary })
-	end
-	return files, cut
-end
 
-local function open_detail(e: Entry, hash: string)
-	local state, cx = e.state, e.cx
-	if state.root == nil then
-		return
-	end
-	e.dgen += 1
-	local gen = e.dgen
-	local d: view.Detail = { hash = hash, loading = true, error = nil, body = "", files = {}, cut = 0 }
-	state.detail = d
-	tern.process.run({
-		"git", "show", "--no-color", "--no-ext-diff", "-M", "--diff-merges=first-parent",
-		"--format=%B%x1e", hash, "--",
-	}, { cwd = state.root, timeout_ms = GIT_MS }, function(r)
-		if gen ~= e.dgen or state.detail ~= d or not alive(cx.pane) then
-			return
-		end
-		d.loading = false
-		if r.status ~= 0 then
-			d.error = trim(r.stderr)
-		else
-			local sep = string.find(r.stdout, "\30", 1, true)
-			if sep then
-				d.body = string.sub(r.stdout, 1, sep - 1)
-				local patch = string.gsub(string.sub(r.stdout, sep + 1), "^%s+", "")
-				d.files, d.cut = split_files(patch)
-			else
-				d.body = r.stdout
-			end
-		end
-		cx:render()
-	end)
-end
 
 local function selected_commit(state: State): graph.Commit?
 	for _, c in state.commits do
@@ -322,8 +388,10 @@ local function define(id: string, peek: boolean)
 				notrepo = false,
 				sel = nil,
 				detail = nil,
+				upstream = nil,
+				zoom = false,
 			}
-			local e: Entry = { state = state, cx = cx, gen = 0, dgen = 0, pending = nil }
+			local e: Entry = { state = state, cx = cx, gen = 0, dgen = 0, pending = nil, cache = {}, cached = 0 }
 			live[cx.pane] = e
 			load(e)
 			return state
@@ -336,8 +404,8 @@ local function define(id: string, peek: boolean)
 			return "Git Graph"
 		end,
 
-		view = function(state, _cx)
-			return view.render(state)
+		view = function(state, cx)
+			return view.render(state, cx.cols)
 		end,
 
 		key = function(state, key, cx)
@@ -346,16 +414,16 @@ local function define(id: string, peek: boolean)
 				return false
 			end
 			local n = key.name
-			if state.detail then
+			if state.zoom then
 				if n == "escape" or n == "backspace" or n == "left" or n == "h" then
-					state.detail = nil
+					state.zoom = false
 					return true
 				elseif n == "c" then
-					copy_hash(cx, find_commit(state, (state.detail :: view.Detail).hash))
-					return false
+					copy_hash(cx, selected_commit(state))
 				end
 				return false
 			end
+			local before = state.sel
 			if n == "down" or n == "j" then
 				move(state, 1)
 			elseif n == "up" or n == "k" then
@@ -369,9 +437,7 @@ local function define(id: string, peek: boolean)
 			elseif n == "end" or key.text == "G" then
 				move(state, #state.commits)
 			elseif n == "enter" or n == "right" or n == "l" then
-				if state.sel then
-					open_detail(e, state.sel :: string)
-				end
+				state.zoom = state.sel ~= nil
 			elseif n == "c" then
 				copy_hash(cx, selected_commit(state))
 				return false
@@ -385,6 +451,9 @@ local function define(id: string, peek: boolean)
 			else
 				return false
 			end
+			if state.sel and state.sel ~= before then
+				request_detail(e, state.sel :: string)
+			end
 			return true
 		end,
 
@@ -395,9 +464,11 @@ local function define(id: string, peek: boolean)
 			end
 			if ev.ev == "select" and type(ev.item) == "string" then
 				state.sel = ev.item
+				request_detail(e, ev.item)
 			elseif ev.ev == "activate" and type(ev.item) == "string" then
 				state.sel = ev.item
-				open_detail(e, ev.item)
+				request_detail(e, ev.item)
+				state.zoom = true
 			elseif ev.ev == "action" then
 				local act = ev.act
 				local item: string? = if type(ev.item) == "string" then ev.item else nil
@@ -409,11 +480,14 @@ local function define(id: string, peek: boolean)
 				elseif act == "more" then
 					state.limit += PAGE
 					load(e)
+				elseif act == "zoom" then
+					state.zoom = state.sel ~= nil
 				elseif act == "back" then
-					state.detail = nil
+					state.zoom = false
 				elseif act == "show-diff" and item then
 					state.sel = item
-					open_detail(e, item :: string)
+					request_detail(e, item :: string)
+					state.zoom = true
 				elseif act == "copy-hash" then
 					copy_hash(cx, find_commit(state, item))
 				elseif act == "copy-subject" then

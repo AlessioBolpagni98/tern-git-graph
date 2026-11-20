@@ -1,5 +1,6 @@
 --!strict
--- Builds the block's view from its state: the graph page and the commit page.
+-- Builds the block's view from its state: the graph beside (or above) the selected
+-- commit's details, or the commit alone when it is expanded.
 
 local graph = require("./graph")
 
@@ -11,8 +12,12 @@ local M = {}
 M.MAX_LANES = 16
 -- Commits loaded per page.
 M.PAGE = 300
+-- Pane width in cells from which the details sit beside the graph instead of under it.
+M.WIDE = 110
+-- Files shown open in the details pane; the rest start folded.
+M.OPEN_FILES = 3
 
-export type FileDiff = { path: string, text: string, binary: boolean }
+export type FileDiff = { path: string, text: string, binary: boolean, adds: number?, dels: number? }
 
 export type Detail = {
 	hash: string,
@@ -21,7 +26,11 @@ export type Detail = {
 	body: string,
 	files: { FileDiff },
 	cut: number, -- files left out past the cap
+	adds: number, -- lines added and removed, over every file (cut ones too)
+	dels: number,
 }
+
+export type Upstream = { name: string, ahead: number, behind: number }
 
 export type State = {
 	peek: boolean,
@@ -29,6 +38,7 @@ export type State = {
 	cwd: string?,
 	root: string?,
 	branch: string?,
+	upstream: Upstream?,
 	remotes: boolean,
 	limit: number,
 	commits: { graph.Commit },
@@ -38,7 +48,8 @@ export type State = {
 	error: string?,
 	notrepo: boolean,
 	sel: string?,
-	detail: Detail?,
+	detail: Detail?, -- the selected commit's
+	zoom: boolean, -- the details fill the block
 }
 
 local function basename(path: string): string
@@ -82,39 +93,23 @@ local REF_TOKENS = {
 	tag = "code warning",
 }
 
-local function subject_cell(c: graph.Commit): { Span }
+local function ref_spans(c: graph.Commit): { Span }
 	local spans: { Span } = {}
 	for _, r in c.refs do
-		local s = REF_TOKENS[r.kind]
-		if r.current then
-			s = REF_TOKENS.head
-		end
-		table.insert(spans, ui.span(r.name, s))
+		table.insert(spans, ui.span(r.name, if r.current then REF_TOKENS.head else REF_TOKENS[r.kind]))
 		table.insert(spans, ui.span(" "))
 	end
+	return spans
+end
+
+local function subject_cell(c: graph.Commit): { Span }
+	local spans = ref_spans(c)
 	table.insert(spans, ui.span(c.subject))
 	return spans
 end
 
-local function tooltip(c: graph.Commit): string
-	local parents = {}
-	for _, p in c.parents do
-		table.insert(parents, short(p))
-	end
-	local lines = {
-		c.subject,
-		"",
-		short(c.hash) .. "  " .. full_date(c.time),
-		c.author .. " <" .. c.email .. ">",
-	}
-	if #parents > 0 then
-		table.insert(lines, "Parents: " .. table.concat(parents, ", "))
-	end
-	return table.concat(lines, "\n")
-end
-
 -- One row of the graph column: absolutely placed pieces (graph.css).
-local function graph_row(c: graph.Commit, row: graph.Row, head: string?): Node
+local function graph_row(c: graph.Commit, row: graph.Row, head: string?, sel: string?): Node
 	local pieces: { Node } = {}
 	for i, s in row.segs do
 		local cls: string
@@ -140,27 +135,44 @@ local function graph_row(c: graph.Commit, row: graph.Row, head: string?): Node
 		end
 		table.insert(pieces, ui.el("span", { key = tostring(i), class = cls }))
 	end
-	return ui.el("div", { key = c.hash, class = "gg-row" }, pieces)
+	local cls = if c.hash == sel then "gg-row gg-sel" else "gg-row"
+	return ui.el("div", { key = c.hash, class = cls }, pieces)
+end
+
+local function with_title(node: Node, title: string): Node
+	local p: { [string]: any } = node.p or {}
+	p.title = title
+	node.p = p
+	return node
 end
 
 local function head_row(state: State): Node
 	local name = if state.root then basename(state.root :: string) else "Git Graph"
-	local meta = if state.branch then "  " .. (state.branch :: string) else ""
+	local left: { Node } = { ui.text({ ui.span(name, "title") }) }
+	if state.branch then
+		table.insert(left, ui.badge(state.branch :: string, if state.branch == "detached" then "warning" else "accent"))
+	end
+	local up = state.upstream
+	if up then
+		local u = up :: Upstream
+		if u.ahead > 0 then
+			table.insert(left, with_title(ui.badge("↑" .. u.ahead, "info"), u.ahead .. " to push to " .. u.name))
+		end
+		if u.behind > 0 then
+			table.insert(left, with_title(ui.badge("↓" .. u.behind, "warning"), u.behind .. " to pull from " .. u.name))
+		end
+	end
+	if state.total then
+		table.insert(left, ui.text({ ui.span(string.format("%d commits", state.total :: number), "muted") }))
+	end
 	return ui.node("row", { key = "head", justify = "between", align = "center", gap = "sm" }, {
-		ui.node("text", {
-			key = "title",
-			spans = { ui.span(name, "title"), ui.span(meta, "muted mono") },
-			truncate = "end",
-			grow = 1,
-			shrink = 1,
-			basis = 0,
-		}),
+		ui.node("row", { key = "id", gap = "sm", align = "center", wrap = true, grow = 1, shrink = 1, basis = 0 }, left),
 		ui.node("row", { key = "end", gap = "sm", align = "center", shrink = 0 }, {
 			ui.button(nil, {
 				key = "remotes",
 				icon = "globe",
 				on = state.remotes,
-				title = if state.remotes then "Hide remote branches" else "Show remote branches",
+				title = if state.remotes then "Hide remote branches (m)" else "Show remote branches (m)",
 				aria = "Remote branches",
 				actions = { click = "remotes" },
 			}),
@@ -168,7 +180,7 @@ local function head_row(state: State): Node
 				key = "refresh",
 				icon = "repeat",
 				busy = state.loading,
-				title = "Refresh",
+				title = "Refresh (r)",
 				aria = "Refresh",
 				actions = { click = "refresh" },
 			}),
@@ -188,7 +200,178 @@ local function legend(items: { { string } }): Node
 	return ui.col({ ui.text(spans) })
 end
 
-local function graph_body(state: State): Node
+local function find(state: State, hash: string?): graph.Commit?
+	for _, c in state.commits do
+		if c.hash == hash then
+			return c
+		end
+	end
+	return nil
+end
+
+-- The graph column beside the commit table, and the pager under them.
+local function history(state: State): Node
+	local head: string? = nil
+	for _, c in state.commits do
+		for _, r in c.refs do
+			if r.current then
+				head = c.hash
+			end
+		end
+	end
+	local width = 1
+	local lines: { Node } = {}
+	local trows = {}
+	local now = os.time()
+	for i, c in state.commits do
+		local row = state.rows[i]
+		width = math.max(width, row.width)
+		table.insert(lines, graph_row(c, row, head, state.sel))
+		table.insert(trows, {
+			id = c.hash,
+			cells = {
+				subject = subject_cell(c),
+				date = M.when(c.time, now),
+				author = c.author,
+			},
+			title = c.subject,
+			menu = { "show-diff", "copy-hash", "copy-subject" },
+		})
+	end
+	width = math.min(width, M.MAX_LANES)
+
+	-- The table hides columns lowest priority first when the pane is narrow.
+	local tcols: { { [string]: any } } = {
+		{ id = "subject", grow = 1, priority = 9 },
+		{ id = "date", mono = true, align = "end", priority = 5 },
+		{ id = "author", priority = 3 },
+	}
+	local children: { Node } = {
+		ui.node("row", { key = "grid", align = "start", gap = "none" }, {
+			ui.el("div", { key = "graph", class = "gg-graph gg-n" .. width }, lines),
+			ui.node("col", { key = "list", grow = 1, basis = 0 }, {
+				ui.node("table", { key = "table", cols = tcols, rows = trows, selectable = true, selected = state.sel }),
+			}),
+		}),
+	}
+	if state.total and (state.total :: number) > #state.commits then
+		table.insert(children, ui.node("pager", {
+			key = "more",
+			variant = "more",
+			page = state.limit // M.PAGE,
+			size = M.PAGE,
+			total = state.total,
+			loading = state.loading,
+			label = "commits",
+		}))
+	end
+	return ui.node("col", { key = "history", gap = "sm" }, children)
+end
+
+-- What the selected commit is and changed. `zoomed` opens every file.
+local function commit_view(state: State, d: Detail?, zoomed: boolean): { Node }
+	local c = find(state, if d then d.hash else state.sel)
+	if c == nil then
+		return { ui.node("empty", { key = "none", icon = "commit", title = "No commit selected" }) }
+	end
+	local cm = c :: graph.Commit
+	local out: { Node } = {}
+
+	-- Who and when, beside the author's mark.
+	local who = ui.node("row", { key = "who", gap = "sm", align = "center" }, {
+		ui.node("avatar", { key = "avatar", text = cm.author, seed = cm.email, size = "sm", title = cm.author .. " <" .. cm.email .. ">" }),
+		ui.node("text", {
+			key = "meta",
+			spans = {
+				ui.span(cm.author, "strong"),
+				ui.span("  " .. M.when(cm.time, os.time()), "muted"),
+			},
+			title = full_date(cm.time),
+			truncate = "end",
+			grow = 1,
+			basis = 0,
+		}),
+		ui.button(nil, {
+			key = "zoom",
+			size = "sm",
+			icon = if zoomed then "back" else "expand",
+			title = if zoomed then "Back to the graph (esc)" else "Expand (enter)",
+			aria = if zoomed then "Back" else "Expand",
+			actions = { click = if zoomed then "back" else "zoom" },
+		}),
+	})
+	table.insert(out, who)
+	table.insert(out, ui.node("text", { key = "subject", spans = { ui.span(cm.subject, "title") }, wrap = "word" }))
+
+	-- Hash, refs and parents.
+	local ids: { Span } = { ui.span(short(cm.hash), "code"), ui.span("  ") }
+	for _, s in ref_spans(cm) do
+		table.insert(ids, s)
+	end
+	if #cm.parents > 0 then
+		local parents = {}
+		for _, p in cm.parents do
+			table.insert(parents, short(p))
+		end
+		table.insert(ids, ui.span((if #cm.parents > 1 then " merge of " else " parent ") .. table.concat(parents, " + "), "muted mono"))
+	end
+	table.insert(out, ui.node("text", { key = "ids", spans = ids, wrap = "word" }))
+
+	if d == nil or (d :: Detail).loading then
+		table.insert(out, ui.node("skeleton", { key = "files", shape = "rows", rows = 4 }))
+		return out
+	end
+	local det = d :: Detail
+	if det.error then
+		table.insert(out, ui.card("Couldn't read the commit", { ui.code(det.error :: string) }, { key = "files", tone = "error", icon = "commit" }))
+		return out
+	end
+
+	local msg = string.gsub(det.body, "^%s+", "")
+	local rest = string.match(msg, "^[^\n]*\n+(.-)%s*$")
+	if rest and rest ~= "" then
+		table.insert(out, ui.node("text", { key = "message", spans = { ui.span(rest, "muted") }, wrap = "word" }))
+	end
+
+	-- Files: a summary line, then one folding card per file.
+	local nfiles = #det.files + det.cut
+	local adds, dels = det.adds, det.dels
+	table.insert(out, ui.node("text", {
+		key = "stat",
+		spans = {
+			ui.span(string.format("%d file%s changed  ", nfiles, if nfiles == 1 then "" else "s"), "strong"),
+			ui.span("+" .. adds, "ins"),
+			ui.span("  "),
+			ui.span("−" .. dels, "del"),
+		},
+	}))
+	if #det.files == 0 then
+		table.insert(out, ui.node("empty", { key = "nofiles", variant = "inline", icon = "file", title = "No file changes" }))
+	end
+	for i, f in det.files do
+		local inner: Node = if f.binary
+			then ui.text({ ui.span("Binary file", "muted") })
+			else ui.diff(f.text, f.path)
+		local meta: { Span } = {}
+		if f.adds or f.dels then
+			meta = { ui.span("+" .. (f.adds or 0), "ins"), ui.span(" "), ui.span("−" .. (f.dels or 0), "del") }
+		end
+		table.insert(out, ui.card(f.path, { inner }, {
+			-- Keyed per commit, so a card the user opened doesn't stay open on the next commit.
+			key = "f" .. i .. "-" .. short(det.hash),
+			icon = "file",
+			meta = meta,
+			collapsible = true,
+			collapsed = not zoomed and i > M.OPEN_FILES,
+		}))
+	end
+	if det.cut > 0 then
+		table.insert(out, ui.text({ ui.span(string.format("%d more files not shown", det.cut), "muted") }))
+	end
+	return out
+end
+
+local function body(state: State): Node?
 	if state.notrepo then
 		return ui.node("empty", {
 			key = "body",
@@ -205,155 +388,50 @@ local function graph_body(state: State): Node
 	end
 	if #state.commits == 0 then
 		if state.loading then
-			return ui.node("shimmer", { key = "body", text = "Reading history…" })
+			return ui.node("skeleton", { key = "body", shape = "rows", rows = 8 })
 		end
-		return ui.node("empty", { key = "body", icon = "branch", title = "No commits yet" })
-	end
-
-	local head: string? = nil
-	local width = 1
-	local lines: { Node } = {}
-	local trows = {}
-	for i, c in state.commits do
-		local row = state.rows[i]
-		for _, r in c.refs do
-			if r.current then
-				head = c.hash
-			end
-		end
-		width = math.max(width, row.width)
-		table.insert(lines, graph_row(c, row, nil))
-		table.insert(trows, {
-			id = c.hash,
-			cells = {
-				subject = subject_cell(c),
-				date = M.when(c.time, os.time()),
-				author = c.author,
-			},
-			title = tooltip(c),
-			menu = { "show-diff", "copy-hash", "copy-subject" },
-		})
-	end
-	-- Mark HEAD's dot now that it is known.
-	if head then
-		for i, c in state.commits do
-			if c.hash == head then
-				lines[i] = graph_row(c, state.rows[i], head)
-				break
-			end
-		end
-	end
-	width = math.min(width, M.MAX_LANES)
-
-	-- The table hides columns lowest priority first when the pane is narrow.
-	local tcols: { { [string]: any } } = {
-		{ id = "subject", grow = 1, priority = 9 },
-		{ id = "date", mono = true, align = "end", priority = 5 },
-		{ id = "author", priority = 3 },
-	}
-
-	local list: { Node } = {
-		ui.node("row", { key = "grid", align = "start", gap = "none" }, {
-			ui.el("div", { key = "graph", class = "gg-graph gg-n" .. width }, lines),
-			ui.node("col", { key = "list", grow = 1, basis = 0 }, {
-				ui.node("table", {
-					key = "table",
-					cols = tcols,
-					rows = trows,
-					selectable = true,
-					selected = state.sel,
-				}),
-			}),
-		}),
-	}
-	if state.total and (state.total :: number) > #state.commits then
-		table.insert(list, ui.node("pager", {
-			key = "more",
-			variant = "more",
-			page = state.limit // M.PAGE,
-			size = M.PAGE,
-			total = state.total,
-			loading = state.loading,
-			label = "commits",
-		}))
-	end
-	return ui.node("scroll", { key = "body", grow = 1, basis = 0, role = "git-graph.body" }, list)
-end
-
-local function find(state: State, hash: string): graph.Commit?
-	for _, c in state.commits do
-		if c.hash == hash then
-			return c
-		end
+		return ui.node("empty", { key = "body", icon = "commit", title = "No commits yet" })
 	end
 	return nil
 end
 
-local function detail_page(state: State, d: Detail): BlockView
-	local c = find(state, d.hash)
-	local subject = if c then c.subject else short(d.hash)
-	local head = ui.node("row", { key = "head", align = "center", gap = "sm" }, {
-		ui.button("Graph", { key = "back", icon = "back", keys = { "esc" }, actions = { click = "back" } }),
-		ui.node("text", { key = "title", spans = { ui.span(subject, "title") }, truncate = "end", grow = 1 }),
-	})
-	local facts: { Node } = {}
-	if c then
-		local parents = {}
-		for _, p in c.parents do
-			table.insert(parents, short(p))
-		end
-		table.insert(facts, ui.kv({
-			{ "Commit", { ui.span(short(d.hash), "mono") } },
-			{ "Author", c.author .. " <" .. c.email .. ">" },
-			{ "Date", { ui.span(full_date(c.time), "mono") } },
-			{ "Parents", { ui.span(if #parents > 0 then table.concat(parents, " ") else "none", "mono") } },
-		}))
+function M.render(state: State, cols: number): BlockView
+	local special = body(state)
+	if special then
+		return {
+			main = ui.node("col", { gap = "md", key = "page" }, { head_row(state), special :: Node }),
+			dock = legend({ { "r", "refresh" }, { if state.peek then "esc" else "q", "close" } }),
+		}
 	end
-	local body: { Node } = {}
-	if d.loading then
-		table.insert(body, ui.node("shimmer", { key = "loading", text = "Reading commit…" }))
-	elseif d.error then
-		table.insert(body, ui.card("Couldn't read the commit", { ui.code(d.error :: string) }, { key = "error", tone = "error", icon = "commit" }))
-	else
-		local msg = string.gsub(d.body, "^%s+", "")
-		local rest = string.match(msg, "^[^\n]*\n+(.*)$")
-		if rest and rest ~= "" then
-			table.insert(body, ui.node("text", { key = "message", spans = { ui.span(rest, "muted") }, wrap = "word" }))
-		end
-		if #d.files == 0 then
-			table.insert(body, ui.node("empty", { key = "nofiles", variant = "inline", icon = "file", title = "No file changes" }))
-		end
-		for i, f in d.files do
-			local inner: Node = if f.binary
-				then ui.text({ ui.span("Binary file", "muted") })
-				else ui.diff(f.text, f.path)
-			local card = ui.card(f.path, { inner }, { key = "f" .. i, icon = "file", collapsible = true })
-			table.insert(body, card)
-		end
-		if d.cut > 0 then
-			table.insert(body, ui.text({ ui.span(string.format("%d more files not shown", d.cut), "muted") }))
-		end
-	end
-	local children: { Node } = { head }
-	for _, f in facts do
-		table.insert(children, f)
-	end
-	table.insert(children, ui.node("scroll", { key = "body", grow = 1, basis = 0, gap = "sm" }, body))
-	return {
-		main = ui.node("col", { gap = "md", key = "detail" }, children),
-		dock = legend({ { "esc", "graph" }, { "c", "copy hash" } }),
-	}
-end
 
-function M.render(state: State): BlockView
-	local d = state.detail
-	if d then
-		return detail_page(state, d)
+	if state.zoom then
+		return {
+			main = ui.node("col", { gap = "md", key = "zoom" }, commit_view(state, state.detail, true)),
+			dock = legend({ { "esc", "back" }, { "c", "copy hash" } }),
+		}
 	end
-	local keys = { { "↑↓", "select" }, { "↵", "diff" }, { "c", "copy hash" }, { "m", "remotes" }, { "r", "refresh" } }
+
+	local wide = cols >= M.WIDE
+	local split = ui.node("split", {
+		key = if wide then "split-row" else "split-col",
+		dir = if wide then "row" else "col",
+		-- Tern keeps the user's drag by key; a double click on the handle goes back to these.
+		sizes = if wide then { 0.6, 0.4 } else { 0.55, 0.45 },
+		min = { if wide then "40ch" else "6lines", if wide then "36ch" else "6lines" },
+		grow = 1,
+	}, {
+		history(state),
+		ui.node("col", { key = "commit", gap = "md" }, commit_view(state, state.detail, false)),
+	})
+	local keys = { { "↑↓", "select" }, { "↵", "expand" } }
+	if wide then
+		table.insert(keys, { "c", "copy hash" })
+		table.insert(keys, { "m", "remotes" })
+		table.insert(keys, { "r", "refresh" })
+	end
 	table.insert(keys, { if state.peek then "esc" else "q", "close" })
 	return {
-		main = ui.node("col", { gap = "md", key = "graph-page" }, { head_row(state), graph_body(state) }),
+		main = ui.node("col", { gap = "md", key = "page" }, { head_row(state), split }),
 		dock = legend(keys),
 	}
 end

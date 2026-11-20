@@ -21,6 +21,11 @@
 		position: relative;
 		height: var(--gg-row);
 	}
+	/* Carry the table's selection tint across the graph. */
+	.gg-row.gg-sel {
+		background: rgb(from var(--accent) r g b / 10%);
+		border-radius: var(--r-chip) 0 0 var(--r-chip);
+	}
 	.gg-s {
 		position: absolute;
 		display: block;
